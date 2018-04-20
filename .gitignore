@@ -1,4 +1,6 @@
 .idea/
 *.iml
 out/
+output/
+data/
 .directory

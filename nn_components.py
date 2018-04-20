@@ -1,9 +1,10 @@
 import numpy as np
 import tensorflow as tf
 
+# Export Moddules
 __all__ = [
     "no_conv",
-    "diffusion_convolution",
+    "diffusion_conv",
     "single_weight_matrix",
     "node_average",
     "node_edge_average",
