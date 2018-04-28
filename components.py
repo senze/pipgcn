@@ -1,112 +1,370 @@
 import numpy as np
 import tensorflow as tf
 
-# Export Modules
+# export modules
 __all__ = [
-    "no_conv",
-    "diffusion_conv",
-    "single_weight_matrix",
-    "node_average",
-    "node_edge_average",
-    "order_dependent",
-    "deep_tensor_conv",
-    "dense", 
-    "merge",
-    "average_predictions",
-    "initializer",
-    "nonlinearity",
+    'no_convolution',
+    'single_weight_matrix',
+    'node_average',
+    'node_edge_average',
+    'order_dependent',
+    'deep_tensor_convolution',
+    'diffusion_convolution',
+    'merge',
+    'dense',
+    'average_predictions',
+    'initializer',
+    'nonlinearity'
 ]
 
-""" ====== Layers ====== """
+""" ===== Layers ===== """
 """ All layers have as first two parameters:
-        - input: input tensor or tuple of input tensors
+        - inputs: input tensor or tuple of input tensors
         - params: dictionary of parameters, could be None
     and return tuple containing:
-        - output: output tensor or tuple of output tensors
+        - outputs: output tensor or tuple of output tensors
         - params: dictionary of parameters, could be None
 """
 
 
-def no_conv(input, params, filters=None, dropout_keep_prob=1.0, trainable=True, **kwargs):
-    vertices, _, _ = input
-    vertices = tf.nn.dropout(vertices, dropout_keep_prob)
-    v_shape = vertices.get_shape()
+def no_convolution(inputs, params, filters=None, keep_prob=1.0, trainable=True, **kwargs):
+    """ No Convolution: z_c = sigma(W * x_c + b)
+    :param inputs: vertices, edges(not used), hood_indices(not used)
+    :param params: shared params or None(need to create new params)
+    :param filters: filter dimension
+    :param keep_prob: dropout_keep_prob
+    :param trainable:
+    :param kwargs:
+    :return:
+    """
+    vertices = inputs[0]
+    vertices = tf.nn.dropout(vertices, keep_prob)
+    vertex_shape = vertices.get_shape()
     if params is None:
         # create new weights
-        Wvc = tf.Variable(initializer("he", (v_shape[1].value, filters)), name="Wvc", trainable=trainable)  # (v_dims, filters)
-        bv = tf.Variable(initializer("zero", (filters,)), name="bv", trainable=trainable)
+        weights = tf.Variable(initializer('uniform', (vertex_shape[1].value, filters)),
+                              name='weights', trainable=trainable)  # (vertex_dimension, filters)
+        biases = tf.Variable(initializer('zero', (filters,)), name='biases', trainable=trainable)
     else:
         # use shared weights
-        Wvc = params["Wvc"]
-        bv = params["bv"]
-        filters = Wvc.get_shape()[-1].value
-    params = {"Wvc": Wvc, "bv": bv}
-
+        weights = params['weights']
+        biases = params['biases']
+        filters = weights.get_shape()[-1].value
+    params = {
+        'weights': weights,
+        'biases': biases
+    }
     # generate vertex signals
-    Zc = tf.matmul(vertices, Wvc, name="Zc")  # (n_verts, filters)
-    nonlin = nonlinearity("relu")
-    sig = Zc + bv
-    z = tf.reshape(nonlin(sig), tf.constant([-1, filters]))
-    z = tf.nn.dropout(z, dropout_keep_prob)
+    z_centroid = tf.matmul(vertices, weights, name='z_centroid')  # (num_vertices, filters)
+    # broadcasting : matrix plus vector
+    signals = z_centroid + biases
+    sigma = nonlinearity('ReLU')
+    z = tf.reshape(sigma(signals), tf.constant([-1, filters]))
+    z = tf.nn.dropout(z, keep_prob)
     return z, params
 
 
-
-def node_edge_average(input, params, filters=None, dropout_keep_prob=1.0, trainable=True, **kwargs):
-    vertices, edges, nh_indices = input
-    nh_indices = tf.squeeze(nh_indices, axis=2)
-    v_shape = vertices.get_shape()
-    e_shape = edges.get_shape()
-    nh_sizes = tf.expand_dims(tf.count_nonzero(nh_indices + 1, axis=1, dtype=tf.float32), -1)  # for fixed number of neighbors, -1 is a pad value
+def single_weight_matrix(inputs, params, filters=None, keep_prob=1.0, trainable=True, **kwargs):
+    """ Single Weight Matrix: z_c = sigma(W * x_c + avg(W * x_n) + b)
+    :param inputs: vertices, edges(not used), hood_indices
+    :param params: shared params or None(need to create new params)
+    :param filters: filter dimension
+    :param keep_prob: dropout_keep_prob
+    :param trainable:
+    :param kwargs:
+    :return:
+    """
+    vertices = inputs[0]
+    vertex_shape = vertices.get_shape()
+    hood_indices = inputs[2]
+    hood_indices = tf.squeeze(hood_indices, axis=2)
+    # for fixed number of neighbors, -1 is a pad value
+    hood_sizes = tf.expand_dims(tf.count_nonzero(hood_indices + 1, axis=1, dtype=tf.float32), -1)
     if params is None:
         # create new weights
-        Wvc = tf.Variable(initializer("he", (v_shape[1].value, filters)), name="Wvc", trainable=trainable)  # (v_dims, filters)
-        bv = tf.Variable(initializer("zero", (filters,)), name="bv", trainable=trainable)
-        Wvn = tf.Variable(initializer("he", (v_shape[1].value, filters)), name="Wvn", trainable=trainable)  # (v_dims, filters)
-        We = tf.Variable(initializer("he", (e_shape[2].value, filters)), name="We", trainable=trainable)  # (e_dims, filters)
+        weights = tf.Variable(initializer('uniform', (vertex_shape[1].value, filters)),
+                              name='weights', trainable=trainable)  # (vertex_dimension, filters)
+        biases = tf.Variable(initializer('zero', (filters,)), name='biases', trainable=trainable)
     else:
         # use shared weights
-        Wvn, We = params["Wvn"], params["We"]
-        Wvc = params["Wvc"]
-        bv = params["bv"]
-        filters = Wvc.get_shape()[-1].value
-    params = {"Wvn": Wvn, "We": We, "Wvc": Wvc, "bv": bv}
-
+        weights = params['weights']
+        biases = params['biases']
+        filters = weights.get_shape()[-1].value
+    params = {
+        'weights': weights,
+        'biases': biases
+    }
     # generate vertex signals
-    Zc = tf.matmul(vertices, Wvc, name="Zc")  # (n_verts, filters)
+    z_centroid = tf.matmul(vertices, weights, name='z_centroid')  # (num_vertices, filters)
     # create neighbor signals
-    e_We = tf.tensordot(edges, We, axes=[[2], [0]], name="e_We")  # (n_verts, n_nbors, filters)
-    v_Wvn = tf.matmul(vertices, Wvn, name="v_Wvn")  # (n_verts, filters)
-
-    Zn = tf.divide(tf.reduce_sum(tf.gather(v_Wvn, nh_indices), 1) + tf.reduce_sum(e_We, 1),
-                   tf.maximum(nh_sizes, tf.ones_like(nh_sizes)))  # (n_verts, v_filters)
-    nonlin = nonlinearity("relu")
-    sig = Zn + Zc + bv
-    z = tf.reshape(nonlin(sig), tf.constant([-1, filters]))
-    z = tf.nn.dropout(z, dropout_keep_prob)
+    z_vertex = tf.matmul(vertices, weights, name='z_vertex')  # (num_vertices, filters)
+    z_neighbor = tf.divide(tf.reduce_sum(tf.gather(z_vertex, hood_indices), 1),
+                           tf.maximum(hood_sizes, tf.ones_like(hood_sizes)))  # (num_vertices, vertex_filters)
+    # broadcasting : matrix plus vector
+    signals = z_centroid + z_neighbor + biases
+    sigma = nonlinearity('ReLU')
+    z = tf.reshape(sigma(signals), tf.constant([-1, filters]))
+    z = tf.nn.dropout(z, keep_prob)
     return z, params
 
 
-def dense(input, params, out_dims=None, dropout_keep_prob=1.0, nonlin=True, trainable=True, **kwargs):
-    input = tf.nn.dropout(input, dropout_keep_prob)
-    in_dims = input.get_shape()[-1].value
-    out_dims = in_dims if out_dims is None else out_dims
+def node_average(inputs, params, filters=None, keep_prob=1.0, trainable=True, **kwargs):
+    """ Node Average: z_centroid = sigma(W_c * x_c + avg(W_n * x_n) + b)
+    :param inputs: vertices, edges(not used), hood_indices
+    :param params: shared params or None(need to create new params)
+    :param filters: filter dimension
+    :param keep_prob: dropout_keep_prob
+    :param trainable:
+    :param kwargs:
+    :return:
+    """
+    vertices = inputs[0]
+    vertex_shape = vertices.get_shape()
+    hood_indices = inputs[2]
+    hood_indices = tf.squeeze(hood_indices, axis=2)
+    # for fixed number of neighbors, -1 is a pad value
+    hood_sizes = tf.expand_dims(tf.count_nonzero(hood_indices + 1, axis=1, dtype=tf.float32), -1)
     if params is None:
-        W = tf.Variable(initializer("he", [in_dims, out_dims]), name="w", trainable=trainable)
-        b = tf.Variable(initializer("zero", [out_dims]), name="b", trainable=trainable)
-        params = {"W": W, "b": b}
+        # create new weights
+        weights_c = tf.Variable(initializer('uniform', (vertex_shape[1].value, filters)),
+                                name='weights_c', trainable=trainable)  # (vertex_dimension, filters)
+        weights_n = tf.Variable(initializer('uniform', (vertex_shape[1].value, filters)),
+                                name='weights_n', trainable=trainable)  # (vertex_dimension, filters)
+        biases = tf.Variable(initializer('zero', (filters,)), name='biases', trainable=trainable)
     else:
-        W, b = params["W"], params["b"]
-    Z = tf.matmul(input, W) + b
-    if(nonlin):
-        nonlin = nonlinearity("relu")
-        Z = nonlin(Z)
-    Z = tf.nn.dropout(Z, dropout_keep_prob)
-    return Z, params
+        weights_c = params['weights_c']
+        weights_n = params['weights_n']
+        biases = params['biases']
+        filters = weights_c.get_shape()[-1].value
+    params = {
+        'weights_c': weights_c,
+        'weights_n': weights_n,
+        'biases': biases
+        }
+    # generate vertex signals
+    z_centroid = tf.matmul(vertices, weights_c, name='z_centroid')  # (num_vertices, filters)
+    # create neighbor signals
+    z_vertex = tf.matmul(vertices, weights_n, name='z_vertex')  # (num_vertices, filters)
+    z_neighbor = tf.divide(tf.reduce_sum(tf.gather(z_vertex, hood_indices), 1),
+                           tf.maximum(hood_sizes, tf.ones_like(hood_sizes)))  # (num_vertices, vertex_filters)
+    # broadcasting : matrix plus vector
+    signals = z_centroid + z_neighbor + biases
+    sigma = nonlinearity('ReLU')
+    z = tf.reshape(sigma(signals), tf.constant([-1, filters]))
+    z = tf.nn.dropout(z, keep_prob)
+    return z, params
 
 
-def merge(input, _, **kwargs):
-    input1, input2, examples = input
+def node_edge_average(inputs, params, filters=None, keep_prob=1.0, trainable=True, **kwargs):
+    """ Node Edge Average: z_c = sigma(W_c * x_c + avg(W_n * x_n) + avg(W_e * a_n) + b)
+    :param inputs: vertices, edges, hood_indices
+    :param params: shared params or None(need to create new params)
+    :param filters: filter dimension
+    :param keep_prob: dropout_keep_prob
+    :param trainable:
+    :param kwargs:
+    :return:
+    """
+    vertices = inputs[0]
+    vertex_shape = vertices.get_shape()
+    edges = inputs[1]
+    edge_shape = edges.get_shape()
+    hood_indices = inputs[2]
+    hood_indices = tf.squeeze(hood_indices, axis=2)
+    # for fixed number of neighbors, -1 is a pad value
+    hood_sizes = tf.expand_dims(tf.count_nonzero(hood_indices + 1, axis=1, dtype=tf.float32), -1)
+    if params is None:
+        # create new weights
+        weights_c = tf.Variable(initializer('uniform', (vertex_shape[1].value, filters)),
+                                name='weights_c', trainable=trainable)  # (vertex_dimension, filters)
+        weights_n = tf.Variable(initializer('uniform', (vertex_shape[1].value, filters)),
+                                name='weights_n', trainable=trainable)  # (vertex_dimension, filters)
+        weights_e = tf.Variable(initializer('uniform', (edge_shape[2].value, filters)),
+                                name='weights_e', trainable=trainable)  # (edge_dimension, filters)
+        biases = tf.Variable(initializer('zero', (filters,)), name='biases', trainable=trainable)
+    else:
+        # use shared weights
+        weights_c = params['weights_c']
+        weights_n = params['weights_n']
+        weights_e = params['weights_e']
+        biases = params['biases']
+        filters = weights_c.get_shape()[-1].value
+    params = {
+        'weights_c': weights_c,
+        'weights_n': weights_n,
+        'weights_e': weights_e,
+        'biases': biases
+        }
+    # generate vertex signals
+    z_centroid = tf.matmul(vertices, weights_c, name='z_centroid')  # (num_vertices, filters)
+    # create neighbor signals
+    z_vertex = tf.matmul(vertices, weights_n, name='z_vertex')  # (num_vertices, filters)
+    z_edge = tf.tensordot(edges, weights_e, axes=[[2], [0]], name='z_edge')  # (num_vertices, num_neighbors, filters)
+    z_neighbor = tf.divide(tf.reduce_sum(tf.gather(z_vertex, hood_indices), 1) + tf.reduce_sum(z_edge, 1),
+                           tf.maximum(hood_sizes, tf.ones_like(hood_sizes)))  # (num_vertices, vertex_filters)
+    # broadcasting : matrix plus vector
+    signals = z_centroid + z_neighbor + biases
+    sigma = nonlinearity('ReLU')
+    z = tf.reshape(sigma(signals), tf.constant([-1, filters]))
+    z = tf.nn.dropout(z, keep_prob)
+    return z, params
+
+
+def order_dependent(inputs, params, filters=None, keep_prob=1.0, trainable=True, **kwargs):
+    """ Order Dependent: z_c = sigma(W_c * x_c + avg(W_nj * x_nj) + avg(W_ej * a_nj) + b)
+    :param inputs: vertices, edges, hood_indices
+    :param params: shared params or None(need to create new params)
+    :param filters: filter dimension
+    :param keep_prob: dropout_keep_prob
+    :param trainable:
+    :param kwargs:
+    :return:
+    """
+    vertices = inputs[0]
+    vertex_shape = vertices.get_shape()
+    edges = inputs[1]
+    edge_shape = edges.get_shape()
+    hood_indices = inputs[2]
+    hood_indices = tf.squeeze(hood_indices, axis=2)
+    hood_size = hood_indices.get_shape()[1].value
+    if params is None:
+        # create new weights
+        weights_c = tf.Variable(initializer('uniform', (vertex_shape[1].value, filters)),
+                                name='weights_c', trainable=trainable)  # (vertex_dimension, filters)
+        weights_n = [tf.Variable(initializer('uniform', (vertex_shape[1].value, filters)),
+                                 name='weights_n{}'.format(i),
+                                 trainable=trainable) for i in range(hood_size)]  # (vertex_dimension, filters)
+        weights_e = tf.Variable(initializer('uniform', (hood_size, edge_shape[2].value, filters)),
+                                name='weights_e', trainable=trainable)  # (num_neighbors, edge_dimension, filters)
+        biases = tf.Variable(initializer('zero', (filters,)), name='biases', trainable=trainable)
+    else:
+        # use shared weights
+        weights_c = params['weights_c']
+        weights_n = [params['weights_n{}'.format(i)] for i in range(hood_size)]
+        weights_e = params['weights_e']
+        biases = params['biases']
+        filters = weights_c.get_shape()[-1].value
+    params = {
+        'weights_c': weights_c,
+        'weights_e': weights_e,
+        'biases': biases
+    }
+    params.update({'weights_n{}'.format(i): weights_n[i] for i in range(hood_size)})
+    # generate vertex signals
+    z_centroid = tf.matmul(vertices, weights_c, name='z_centroid')  # (num_vertices, filters)
+    # create neighbor signals
+    # for each neighbor, calculate signals:
+    z_vertex = tf.zeros_like(z_centroid)
+    for i in range(hood_size):
+        z_vertex += tf.matmul(tf.gather(vertices, hood_indices[:, i]), weights_n[i])
+    z_vertex = tf.divide(z_vertex, tf.constant(hood_size, dtype=tf.float32))
+    z_edge = tf.tensordot(edges, weights_e, axes=[[1, 2], [0, 1]])  # (num_vertices, filters)
+    z_edge = tf.divide(z_edge, tf.constant(hood_size, dtype=tf.float32))
+    # broadcasting : matrix plus vector
+    signals = z_centroid + z_vertex + z_edge + biases
+    sigma = nonlinearity('ReLU')
+    z = tf.reshape(sigma(signals), tf.constant([-1, filters]))
+    z = tf.nn.dropout(z, keep_prob)
+    return z, params
+
+
+def deep_tensor_convolution(inputs, params, factors=None, keep_prob=1.0, trainable=True, **kwargs):
+    """ Deep Tensor Convolution: z_c = x_c + avg(sigma(W_f * (W_n * x_n + b_n)⊕(W_e * a_n + b_e))
+    :param inputs: vertices, edges, hood_indices
+    :param params: shared params or None(need to create new params)
+    :param factors:
+    :param keep_prob: dropout_keep_prob
+    :param trainable:
+    :param kwargs:
+    :return:
+    """
+    vertices = inputs[0]
+    vertex_shape = vertices.get_shape()
+    edges = inputs[1]
+    edge_shape = edges.get_shape()
+    hood_indices = inputs[2]
+    hood_indices = tf.squeeze(hood_indices, axis=2)
+    hood_size = hood_indices.get_shape()[1].value
+    if params is None:
+        # create new weights
+        weights_f = tf.Variable(initializer('uniform', (factors, vertex_shape[1].value)),
+                                name='weights_f', trainable=trainable)  # (factors, vertex_dimension)
+        weights_n = tf.Variable(initializer('uniform', (vertex_shape[1].value, factors)),
+                                name='weights_n', trainable=trainable)  # (vertex_dimension, factors)
+        weights_e = tf.Variable(initializer('uniform', (edge_shape[2].value, factors)),
+                                name='weights_e', trainable=trainable)  # (edge_dimension, factors)
+        biases_n = tf.Variable(initializer('zero', (factors,)), name='biases_n', trainable=trainable)
+        biases_e = tf.Variable(initializer('zero', (factors,)), name='biases_e', trainable=trainable)
+    else:
+        # use shared weights
+        weights_f = params['weights_f']
+        weights_n = params['weights_n']
+        weights_e = params['weights_e']
+        biases_n = params['biases_n']
+        biases_e = params['biases_e']
+    params = {
+        'weights_f': weights_f,
+        'weights_n': weights_n,
+        'weights_e': weights_e,
+        'biases_n': biases_n,
+        'biases_e': biases_e
+    }
+    # create neighbor signals
+    z_vertex = tf.matmul(vertices, weights_n, name='z_vertex')  # (num_vertices, factors)
+    z_vertex += biases_n
+    z_edge = tf.tensordot(edges, weights_e, axes=[[2], [0]], name='z_edge')  # (num_vertices, num_neighbors, factors)
+    z_edge += biases_e
+    z_factor = tf.gather(z_vertex, hood_indices) * z_edge  # (num_vertices, num_neighbors, factors)
+    sigma = nonlinearity('tanh')
+    z_ij = sigma(tf.tensordot(z_factor, weights_f, axes=[[2], [0]],
+                              name='z_ij'))  # (num_vertices, num_neighbors, vertex_dimension)
+    # broadcasting : matrix plus vector
+    signals = vertices + tf.divide(tf.reduce_sum(z_ij, axis=1),
+                                   tf.constant(hood_size, dtype=tf.float32))  # (num_vertices, vertex_dimension)
+    z = tf.reshape(signals, tf.constant([-1, vertex_shape[1].value]))
+    z = tf.nn.dropout(z, keep_prob)
+    return z, params
+
+
+def diffusion_convolution(inputs, params, keep_prob=1.0, trainable=True, **kwargs):
+    """ Diffusion Convolution:
+    :param inputs: vertices, edges, hood_indices
+    :param params: shared params or None(need to create new params)
+    :param keep_prob: dropout_keep_prob
+    :param trainable:
+    :param kwargs:
+    :return:
+    """
+    vertices = inputs[0]
+    inputs_dimension = vertices.get_shape()[-1].value
+    hops = inputs[1]
+    hop = hops.get_shape()[1].value
+    if params is None:
+        # create new weights
+        weights = tf.Variable(initializer('uniform', (1, 1, hop, inputs_dimension)),
+                              name='weights', trainable=trainable)
+    else:
+        # use shared weights
+        weights = params['weights']
+    params = {
+        'weights': weights
+    }
+    PX = tf.expand_dims(tf.tensordot(hops, vertices, axes=[[-1], [0]]), axis=1)
+    z = weights * PX
+    z = tf.reshape(z, shape=[-1, inputs_dimension * hop])
+    z = tf.nn.dropout(z, keep_prob)
+    sigma = nonlinearity('ReLU')
+    return sigma(z), params
+
+
+def merge(inputs, params, **kwargs):
+    """ Merge Layer(2 legs: ligand protein and receptor protein)
+    :param inputs: input1, input2, examples
+    :param params: shared params(not used)
+    :param kwargs:
+    :return:
+    """
+    input1, input2, examples = inputs
     out1 = tf.gather(input1, examples[:, 0])
     out2 = tf.gather(input2, examples[:, 1])
     output1 = tf.concat([out1, out2], axis=0)
@@ -114,181 +372,65 @@ def merge(input, _, **kwargs):
     return tf.concat((output1, output2), axis=1), None
 
 
-def diffusion_conv(input, params, dropout_keep_prob=1.0, trainable=True, **kwargs):
-    vertices, power_trans = input
-    in_dims = vertices.get_shape()[-1].value
-    power_hops = power_trans.get_shape()[1].value
+def dense(inputs, params, outputs_dimension=None, keep_prob=1.0, active=True, trainable=True, **kwargs):
+    """ Dense Layer(Part of Full-connected Layer)
+    :param inputs:
+    :param params:
+    :param outputs_dimension:
+    :param keep_prob:
+    :param active:
+    :param trainable:
+    :param kwargs:
+    :return:
+    """
+    inputs = tf.nn.dropout(inputs, keep_prob)
+    inputs_dimension = inputs.get_shape()[-1].value
+    outputs_dimension = inputs_dimension if outputs_dimension is None else outputs_dimension
     if params is None:
-        W = tf.Variable(initializer("he", (1, 1, power_hops, in_dims)), name="w", trainable=trainable)
+        weights = tf.Variable(initializer('uniform', [inputs_dimension, outputs_dimension]),
+                              name='weights', trainable=trainable)
+        biases = tf.Variable(initializer('zero', [outputs_dimension]), name='biases', trainable=trainable)
+        params = {'weights': weights, 'biases': biases}
     else:
-        W = params["W"]
-    params = {"W": W}
-    PX = tf.expand_dims(tf.tensordot(power_trans, vertices, axes=[[-1], [0]]), axis=1)
-    Z = W * PX
-    Z = tf.reshape(Z, shape=[-1, in_dims * power_hops])
-    nonlin = nonlinearity("relu")
-    Z = tf.nn.dropout(Z, dropout_keep_prob)
-    return nonlin(Z), params
-
-
-def single_weight_matrix(input, params, filters=None, dropout_keep_prob=1.0, trainable=True, **kwargs):
-    vertices, edges, nh_indices = input
-    nh_indices = tf.squeeze(nh_indices, axis=2)
-    v_shape = vertices.get_shape()
-    nh_sizes = tf.expand_dims(tf.count_nonzero(nh_indices + 1, axis=1, dtype=tf.float32), -1)  # for fixed number of
-    if params is None:
-        # create new weights
-        W = tf.Variable(initializer("he", (v_shape[1].value, filters)), name="W", trainable=trainable)  # (v_dims, filters)
-        b = tf.Variable(initializer("zero", (filters,)), name="b", trainable=trainable)
-    else:
-        # use shared weights
-        W = params["W"]
-        b = params["b"]
-        filters = W.get_shape()[-1].value
-    params = {"W": W, "b": b}
-
-    # generate vertex signals
-    Zc = tf.matmul(vertices, W, name="Zc")  # (n_verts, filters)
-    # create neighbor signals
-    v_W = tf.matmul(vertices, W, name="v_W")  # (n_verts, filters)
-    Zn = tf.divide(tf.reduce_sum(tf.gather(v_W, nh_indices), 1), tf.maximum(nh_sizes, tf.ones_like(nh_sizes)))  # (n_verts, v_filters)
-
-    nonlin = nonlinearity("relu")
-
-    sig = Zc + Zn + b
-    h = tf.reshape(nonlin(sig), tf.constant([-1, filters]))
-    h = tf.nn.dropout(h, dropout_keep_prob)
-    return h, params
-
-
-def node_average(input, params, filters=None, dropout_keep_prob=1.0, trainable=True, **kwargs):
-    vertices, edges, nh_indices = input
-    nh_indices = tf.squeeze(nh_indices, axis=2)
-    v_shape = vertices.get_shape()
-    nh_sizes = tf.expand_dims(tf.count_nonzero(nh_indices + 1, axis=1, dtype=tf.float32), -1)  # for fixed number of neighbors, -1 is a pad value
-
-    if params is None:
-        # create new weights
-        Wc = tf.Variable(initializer("he", (v_shape[1].value, filters)), name="Wc", trainable=trainable)  # (v_dims, filters)
-        Wn = tf.Variable(initializer("he", (v_shape[1].value, filters)), name="Wn", trainable=trainable)  # (v_dims, filters)
-        b = tf.Variable(initializer("zero", (filters,)), name="b", trainable=trainable)
-    else:
-        Wn, Wc = params["Wn"], params["Wc"]
-        filters = Wc.get_shape()[-1].value
-        b = params["b"]
-    params = {"Wn": Wn, "Wc": Wc, "b": b}
-
-    # generate vertex signals
-    Zc = tf.matmul(vertices, Wc, name="Zc")  # (n_verts, filters)
-    # create neighbor signals
-    v_Wn = tf.matmul(vertices, Wn, name="v_Wn")  # (n_verts, filters)
-    Zn = tf.divide(tf.reduce_sum(tf.gather(v_Wn, nh_indices), 1),
-                   tf.maximum(nh_sizes, tf.ones_like(nh_sizes)))  # (n_verts, v_filters)
-
-    nonlin = nonlinearity("relu")
-    sig = Zn + Zc + b
-    h = tf.reshape(nonlin(sig), tf.constant([-1, filters]))
-    h = tf.nn.dropout(h, dropout_keep_prob)
-    return h, params
-
-
-def order_dependent(input, params, filters=None, dropout_keep_prob=1.0, trainable=True, **kwargs):
-    vertices, edges, nh_indices = input
-    v_shape = vertices.get_shape()
-    e_shape = edges.get_shape()
-    nh_indices = tf.squeeze(nh_indices, axis=2)
-    nh_size = nh_indices.get_shape()[1].value
-
-    if params is None:
-        # create new weights
-        Wc = tf.Variable(initializer("he", (v_shape[1].value, filters)), name="Wn", trainable=trainable)  # (v_dims, filters)
-        Wn = [tf.Variable(initializer("he", (v_shape[1].value, filters)), name="Wc{}".format(i), trainable=trainable) for i in range(nh_size)]  # (v_dims, filters)
-        We = tf.Variable(initializer("he", (nh_size, e_shape[2].value, filters)), name="We", trainable=trainable)  # (n_nbors, e_dims, filters)
-        b = tf.Variable(initializer("zero", (filters,)), name="b", trainable=trainable)
-    else:
-        # use shared weights
-        Wc = params["Wc"]
-        Wn = [params["Wn{}".format(i)] for i in range(nh_size)]
-        We = params["We"]
-        b = params["b"]
-        filters = Wc.get_shape()[-1].value
-    params = {"Wc": Wc, "We": We, "b":b}
-    params.update({"Wn{}".format(i): Wn[i] for i in range(nh_size)})
-
-    # generate vertex signals
-    Zc = tf.matmul(vertices, Wc, name="Zc")  # (n_verts, filters)
-    # create neighbor signals
-    # for each neighbor, calculate signals:
-    Zn = tf.zeros_like(Zc)
-    for i in range(nh_size):
-        Zn += tf.matmul(tf.gather(vertices, nh_indices[:, i]), Wn[i])
-    Ze = tf.tensordot(edges, We, axes=[[1, 2], [0, 1]])  # (n_verts, filters)
-    Zn = tf.divide(Zn, tf.constant(nh_size, dtype=tf.float32))
-    Ze = tf.divide(Ze, tf.constant(nh_size, dtype=tf.float32))
-
-    nonlin = nonlinearity("relu")
-    sig = Zn + Ze + Zc + b
-    h = tf.reshape(nonlin(sig), tf.constant([-1, filters]))
-    h = tf.nn.dropout(h, dropout_keep_prob)
-    return h, params
-
-
-def deep_tensor_conv(input, params, factors=None, dropout_keep_prob=1.0, trainable=True, **kwargs):
-    vertices, edges, nh_indices = input
-    nh_indices = tf.squeeze(nh_indices, axis=2)
-    v_shape = vertices.get_shape()
-    e_shape = edges.get_shape()
-    nh_size = nh_indices.get_shape()[1].value
-    if params is None:
-        # create new weights
-        Wdf = tf.Variable(initializer("he", (e_shape[2].value, factors)), name="Wdf", trainable=trainable)  # (e_dims, factors)
-        Wcf = tf.Variable(initializer("he", (v_shape[1].value, factors)), name="Wcf", trainable=trainable)  # (v_dims, factors)
-        Wfc = tf.Variable(initializer("he", (factors, v_shape[1].value)), name="Wfc", trainable=trainable)  # (factors, v_dims)
-        bf1 = tf.Variable(initializer("zero", (factors,)), name="be", trainable=trainable)
-        bf2 = tf.Variable(initializer("zero", (factors,)), name="bv", trainable=trainable)
-        params = {name: thing for name, thing in [("Wdf", Wdf), ("Wcf", Wcf), ("Wfc", Wfc), ("bf1", bf1), ("bf2", bf2)]}
-    else:
-        Wdf, Wcf, Wfc = params["Wdf"], params["Wcf"], params["Wfc"]
-        bf1, bf2 = params["bf1"], params["bf2"]
-
-    #nonlinearity
-    nonlin = nonlinearity("tanh")
-
-    # create neighbor signals
-    v_Wcf = tf.matmul(vertices, Wcf, name="v_Wcf")  # (n_verts, factors)
-    e_Wdf = tf.tensordot(edges, Wdf, axes=[[2], [0]], name="e_Wdf")  # (n_verts, n_nbors, factors)
-    v_Wcf += bf1
-    e_Wdf += bf2
-    Zn = tf.gather(v_Wcf, nh_indices) * e_Wdf  # (n_verts, n_nbors, factors)
-    V_ij = nonlin(tf.tensordot(Zn, Wfc, axes=[[2], [0]], name="Vij"))  # (n_verts, n_nbors, v_dims)
-
-    sig = vertices + tf.divide(tf.reduce_sum(V_ij, axis=1), tf.constant(nh_size, dtype=tf.float32))  # (n_verts, v_dims)
-    z = tf.reshape(sig, tf.constant([-1, v_shape[1].value]))
-    z = tf.nn.dropout(z, dropout_keep_prob)
+        weights, biases = params['weights'], params['biases']
+    z = tf.matmul(inputs, weights) + biases
+    if active:
+        active_function = nonlinearity('ReLU')
+        z = active_function(z)
+    z = tf.nn.dropout(z, keep_prob)
     return z, params
 
 
-def average_predictions(input, _, **kwargs):
-    combined = tf.reduce_mean(tf.stack(tf.split(input, 2)), 0)
+""" ===== Non Layers ===== """
+
+
+def average_predictions(inputs, params, **kwargs):
+    combined = tf.reduce_mean(tf.stack(tf.split(inputs, 2)), 0)
     return combined, None
 
 
-""" ======== Non Layers ========= """
-
-
-def initializer(init, shape):
-    if init == "zero":
+def initializer(opt, shape):
+    """ Initialize 'zero' or uniform shape 'tensorFlow' object
+    :param opt: option
+    :param shape: shape params
+    :return:
+    """
+    if opt == 'zero':
         return tf.zeros(shape)
-    elif init == "he":
-        fan_in = np.prod(shape[0:-1])
-        std = 1/np.sqrt(fan_in)
+    elif opt == 'uniform':
+        F_in = np.prod(shape[0:-1])
+        std = 1/np.sqrt(F_in)
         return tf.random_uniform(shape, minval=-std, maxval=std)
 
 
-def nonlinearity(nl):
-    if nl == "relu":
+def nonlinearity(opt):
+    """ add non-linearity
+    :param opt: option
+    :return:
+    """
+    if opt == 'ReLU':
         return tf.nn.relu
-    elif nl == "tanh":
+    elif opt == 'tanh':
         return tf.nn.tanh
-    elif nl == "linear" or nl == "none":
+    elif opt == 'linear' or 'none':
         return lambda x: x

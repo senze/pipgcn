@@ -1,14 +1,14 @@
 num_epochs: 80
-minibatch_size: 128
+mini_batch_size: 128
 test_batch_size: 2000
 experiments:
-- - "layer_1"
-  - train_data_file: "dcnn_hop2_train.cpkl"
-    test_data_file: "dcnn_hop2_test.cpkl"
-    layer_args: {dropout_keep_prob: 1.0}
+- - 'layer_1'
+  - train_data_file: 'dcnn_hop2_train.cpkl'
+    test_data_file: 'dcnn_hop2_test.cpkl'
+    layer_args: {keep_prob: 1.0}
     layers:
-    - ["diffusion_convolution"]
-    - ["merge", {}, ["merge"]]
-    - ["dense", {out_dims: 512}]
-    - ["dense", {out_dims: 1, nonlin: False}]
-    - ["average_predictions"]
+    - ['diffusion_convolution']
+    - ['merge', {}, ['merge']]
+    - ['dense', {outputs_dimension: 512}]
+    - ['dense', {outputs_dimension: 1, active: False}]
+    - ['average_predictions']

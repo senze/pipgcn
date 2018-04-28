@@ -1,58 +1,52 @@
 import numpy as np
 from config import info
 
-"""
-Fitter of models
-"""
-
-# Export Modules
+# export modules
 __all__ = ['Fitter']
 
 
 class Fitter:
-    def __init__(self, results_processor=None):
-        self.results_processor = results_processor
+    """ Fitter of models """
+    def __init__(self, processor=None):
+        self.processor = processor
 
-    def fit_model(self, exp_specs, data, model):
-        """
-        trains model by iterating minibatches for specified number of epochs
-        """
-        info("Fitting Model")
+    def fit(self, exp_spec, data, model):
+        """ trains model by iterating mini-batches for specified number of epochs """
         # train for specified number of epochs
-        for epoch in range(1, exp_specs["num_epochs"] + 1):
-            print("calculate")
-            self.train_epoch(data["train"], model, exp_specs["minibatch_size"])
+        for epoch in range(1, exp_spec['num_epochs'] + 1):
+            info('epoch_' + str(epoch))
+            self.train_epoch(data['train'], model, exp_spec['mini_batch_size'])
         # calculate train and test metrics
-        headers, result = self.results_processor.process_results(exp_specs, data, model, "epoch_" + str(epoch))
+        headers, result = self.processor.process_results(exp_spec, data, model, 'epoch_' + str(exp_spec['num_epochs']))
         # clean up
-        self.results_processor.reset()
+        self.processor.reset()
         model.close()
         return headers, result
 
-    def train_epoch(self, data, model, minibatch_size):
+    def train_epoch(self, data, model, mini_batch_size):
         """
         Trains model for one pass through training data, one protein at a time
-        Each protein is split into minibatches of paired examples.
-        Features for the entire protein is passed to model, but only a minibatch of examples are passed
+        Each protein is split into mini-batches of paired examples.
+        Features for the entire protein is passed to model, but only a mini-batch of examples are passed
         """
-        prot_perm = np.random.permutation(len(data))
+        random_data_indices = np.random.permutation(len(data))
         # loop through each protein
-        for protein in prot_perm:
+        for protein_index in random_data_indices:
             # extract just data for this protein
-            prot_data = data[protein]
-            pair_examples = prot_data["label"]
+            protein_data = data[protein_index]
+            pair_examples = protein_data['label']
             n = len(pair_examples)
-            shuffle_indices = np.random.permutation(np.arange(n)).astype(int)
-            # loop through each minibatch
-            for i in range(int(n / minibatch_size)):
-                # extract data for this minibatch
-                index = int(i * minibatch_size)
-                examples = pair_examples[shuffle_indices[index: index + minibatch_size]]
-                minibatch = {}
-                for feature_type in prot_data:
-                    if feature_type == "label":
-                        minibatch["label"] = examples
+            random_pair_indices = np.random.permutation(np.arange(n))
+            # loop through each mini-batch
+            for i in range(int(n / mini_batch_size)):
+                # extract data for this mini-batch
+                index = int(i * mini_batch_size)
+                examples = pair_examples[random_pair_indices[index: index + mini_batch_size]]
+                mini_batch_data = {}
+                for feature_type in protein_data:
+                    if feature_type == 'label':
+                        mini_batch_data['label'] = examples
                     else:
-                        minibatch[feature_type] = prot_data[feature_type]
+                        mini_batch_data[feature_type] = protein_data[feature_type]
                 # train the model
-                model.train(minibatch)
+                model.train(mini_batch_data)
