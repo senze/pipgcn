@@ -1,7 +1,7 @@
 import numpy as np
 import tensorflow as tf
 
-# Export Moddules
+# Export Modules
 __all__ = [
     "no_conv",
     "diffusion_conv",
@@ -271,7 +271,6 @@ def deep_tensor_conv(input, params, factors=None, dropout_keep_prob=1.0, trainab
 def average_predictions(input, _, **kwargs):
     combined = tf.reduce_mean(tf.stack(tf.split(input, 2)), 0)
     return combined, None
-
 
 
 """ ======== Non Layers ========= """
